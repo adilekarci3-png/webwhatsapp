@@ -30,3 +30,20 @@ RESET ROLE;
 -- mevcut tablolar için de yetki ver (SET ROLE kullanmadıysanız bile garanti)
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.messages TO webwhatsapp_user;
 
+-- ====== messages: read receipts + status ======
+CREATE INDEX IF NOT EXISTS idx_messages_conv_receiver_read
+ON public.messages (conversation_id, receiver, read_at_unix);
+
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS receiver TEXT;
+
+ALTER TABLE public.messages
+ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'SENT';
+
+ALTER TABLE public.messages
+ADD COLUMN IF NOT EXISTS read_at_unix BIGINT;
+
+CREATE INDEX IF NOT EXISTS idx_messages_receiver_read
+ON public.messages (receiver, read_at_unix);
+
+CREATE INDEX IF NOT EXISTS idx_messages_conv_receiver_read
+ON public.messages (conversation_id, receiver, read_at_unix);
