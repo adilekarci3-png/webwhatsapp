@@ -301,9 +301,14 @@ function send(): void {
   const body = text.value.trim();
   if (!body) return;
 
-  // Geriye uyum: backend plain-text kabul ediyorsa bu çalışır
-  // ama event standardına geçmek istersen message.send envelope yollayabilirsin.
-  ws.send(body);
+  ws.send(JSON.stringify({
+    type: "message.send",
+    conversationId: conversationId.value,
+    sender: sender.value,
+    receiver: receiver.value,
+    body,
+    ts: Math.floor(Date.now() / 1000),
+  }));
 
   text.value = "";
 }
