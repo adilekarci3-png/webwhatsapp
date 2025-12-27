@@ -8,4 +8,5 @@ type Repository interface {
 
 	// ✅ Okundu bilgisi
 	MarkRead(ctx context.Context, conversationID, receiver string, messageIDs []string, readAtUnix int64) error
+	UpdateStatus(ctx context.Context, id string, status string) error
 }

@@ -4,46 +4,43 @@
 -- schema yetkileri
 GRANT USAGE, CREATE ON SCHEMA public TO webwhatsapp_user;
 
--- default privileges (ileride yeni tablolar için)
+-- default privileges
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO webwhatsapp_user;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
 GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO webwhatsapp_user;
 
--- tabloyu owner olarak webwhatsapp_user ile yarat (en garantisi: SET ROLE)
+-- En garantisi: owner olarak create etmek
 SET ROLE webwhatsapp_user;
 
+-- ✅ Tek seferde "final" tablo şeması
 CREATE TABLE IF NOT EXISTS public.messages (
   id              TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
   sender          TEXT NOT NULL,
+  receiver        TEXT,
   body            TEXT NOT NULL,
-  created_at_unix BIGINT NOT NULL
+  status          TEXT NOT NULL DEFAULT 'SENT',
+  created_at_unix BIGINT NOT NULL,
+  read_at_unix    BIGINT,
+  client_msg_id   TEXT
 );
-
-CREATE INDEX IF NOT EXISTS idx_messages_conversation_ts
-ON public.messages (conversation_id, created_at_unix DESC);
 
 RESET ROLE;
 
--- mevcut tablolar için de yetki ver (SET ROLE kullanmadıysanız bile garanti)
+-- mevcut tablolar için de yetki ver
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.messages TO webwhatsapp_user;
 
--- ====== messages: read receipts + status ======
-CREATE INDEX IF NOT EXISTS idx_messages_conv_receiver_read
-ON public.messages (conversation_id, receiver, read_at_unix);
-
-ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS receiver TEXT;
-
-ALTER TABLE public.messages
-ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'SENT';
-
-ALTER TABLE public.messages
-ADD COLUMN IF NOT EXISTS read_at_unix BIGINT;
+-- ✅ Index'ler (kolonlar garanti var)
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_ts
+  ON public.messages (conversation_id, created_at_unix DESC);
 
 CREATE INDEX IF NOT EXISTS idx_messages_receiver_read
-ON public.messages (receiver, read_at_unix);
+  ON public.messages (receiver, read_at_unix);
 
 CREATE INDEX IF NOT EXISTS idx_messages_conv_receiver_read
-ON public.messages (conversation_id, receiver, read_at_unix);
+  ON public.messages (conversation_id, receiver, read_at_unix);
+
+CREATE INDEX IF NOT EXISTS idx_messages_client_msg_id
+  ON public.messages (client_msg_id);

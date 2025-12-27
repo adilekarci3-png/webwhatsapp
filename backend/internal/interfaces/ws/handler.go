@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -11,6 +12,14 @@ import (
 	"example.com/webwhatsapp/backend/internal/application/usecases/messaging"
 	"example.com/webwhatsapp/backend/internal/infrastructure/cache/redis"
 )
+
+/*
+	Bu Handler sürümünde kritik düzeltme:
+	- Vue JSON gönderiyor: { type:"message.send", conversationId, sender, receiver, body, ts }
+	- Önceki sürümde message.send case'i olmadığı için mesajlar "bilinmeyen event" olarak yutuluyordu.
+	- Ayrıca message.read publish'ini iki kez yapmamak için WS tarafındaki manuel publish kaldırıldı
+	  (MarkRead servis içinde publish ediyorsa).
+*/
 
 type Handler struct {
 	msgSvc *messaging.Service
@@ -48,7 +57,7 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ✅ Degraded mode guard
+	// Degraded mode guard
 	if h.pubsub == nil || h.msgSvc == nil {
 		http.Error(w, "websocket service unavailable", http.StatusServiceUnavailable)
 		return
@@ -65,7 +74,7 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	// ✅ Redis subscribe
+	// Redis subscribe
 	msgs, unsubscribe, err := h.pubsub.Subscribe(ctx, channel)
 	if err != nil {
 		http.Error(w, "redis subscribe failed: "+err.Error(), http.StatusServiceUnavailable)
@@ -73,10 +82,10 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer unsubscribe()
 
-	// === CONNECT: presence online ===
+	// CONNECT: presence online
 	_ = h.publishPresence(ctx, channel, conv, sender, true, 0)
 
-	// ✅ Redis -> WS
+	// Redis -> WS
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -85,7 +94,7 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// ✅ WS -> Handlers
+	// WS -> Handlers
 	for {
 		_, payload, err := conn.ReadMessage()
 		if err != nil {
@@ -107,12 +116,22 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 			}
 
 			switch ev.Type {
+
 			case "typing.start":
-				_ = h.publishTyping(ctx, channel, conv, sender, true)
+				_ = h.publishTyping(ctx, channel, ev.ConversationID, ev.Sender, true)
 				continue
+
 			case "typing.stop":
-				_ = h.publishTyping(ctx, channel, conv, sender, false)
+				_ = h.publishTyping(ctx, channel, ev.ConversationID, ev.Sender, false)
 				continue
+
+			case "typing":
+				// Eğer client ileride direkt typing göndermeye geçerse destek olsun
+				var tp TypingPayload
+				_ = json.Unmarshal(ev.Payload, &tp)
+				_ = h.publishTyping(ctx, channel, ev.ConversationID, ev.Sender, tp.IsTyping)
+				continue
+
 			case "message.read":
 				// payload: {messageIds:[...], readAt:...}
 				var rp ReadPayload
@@ -121,34 +140,63 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 					rp.ReadAt = time.Now().Unix()
 				}
 
-				// DB update + publish (mesaj service'e eklenecek)
+				// okuyan kişi bu bağlantının user'ıdır => sender parametresi
+				// NOT: msgSvc.MarkRead içinde publish yapıyorsanız burada ekstra publish yapmayın.
 				if err := h.msgSvc.MarkRead(ctx, ev.ConversationID, sender, rp.MessageIDs, rp.ReadAt); err != nil {
 					h.writeError(conn, err)
 					continue
 				}
-
-				// room'a read event yayınla (diğer taraf tik günceller)
-				out, _ := json.Marshal(Event{
-					Type:           "message.read",
-					ConversationID: ev.ConversationID,
-					Sender:         sender,
-					Receiver:       receiver,
-					Payload:        mustJSONRaw(rp),
-				})
-				_ = h.pubsub.Publish(ctx, channel, out)
 				continue
+
+			case "message.send":
+				// ✅ Vue buradan geliyor
+				body := strings.TrimSpace(ev.Body)
+				if body == "" {
+					// boş mesajı ignore
+					continue
+				}
+
+				in := messaging.SendMessageInput{
+					ConversationID: ev.ConversationID,
+					Sender:         ev.Sender,
+					Receiver:       ev.Receiver,
+					Body:           strings.TrimSpace(ev.Body),
+					TS:             ev.TS,
+					ClientMsgID:    ev.ClientMsgID, // ✅
+				}
+
+				msg, err := h.msgSvc.SendMessage(ctx, in)
+				if err != nil {
+					h.writeError(conn, err)
+					continue
+				}
+
+				// ACK (opsiyonel)
+				ack, _ := json.Marshal(map[string]any{
+					"type":      "message.ack",
+					"messageId": msg.ID,
+					"status":    "ACK",
+				})
+				_ = h.pubsub.Publish(ctx, channel, ack)
+				continue
+
 			default:
-				// bilinmeyen event
+				// bilinmeyen event: ignore
 				continue
 			}
 		}
 
-		// 2) Plain text geldiyse => message.new gibi davran
+		// 2) Plain text geldiyse (legacy) => message.send gibi davran
+		body := strings.TrimSpace(string(payload))
+		if body == "" {
+			continue
+		}
+
 		in := messaging.SendMessageInput{
 			ConversationID: conv,
 			Sender:         sender,
 			Receiver:       receiver,
-			Body:           string(payload),
+			Body:           body,
 		}
 
 		msg, err := h.msgSvc.SendMessage(ctx, in)
@@ -157,7 +205,6 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// ACK: sender'a da (room üzerinden) dönebilir; minimalde room'a yayınla
 		ack, _ := json.Marshal(map[string]any{
 			"type":      "message.ack",
 			"messageId": msg.ID,
@@ -166,7 +213,7 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 		_ = h.pubsub.Publish(ctx, channel, ack)
 	}
 
-	// === DISCONNECT: presence offline ===
+	// DISCONNECT: presence offline
 	_ = h.publishPresence(ctx, channel, conv, sender, false, time.Now().Unix())
 
 	<-done

@@ -3,12 +3,18 @@ package ws
 import "encoding/json"
 
 type Event struct {
-	Type           string          `json:"type"`
-	ConversationID string          `json:"conversationId,omitempty"`
-	Sender         string          `json:"sender,omitempty"`
-	Receiver       string          `json:"receiver,omitempty"`
-	MessageID      string          `json:"messageId,omitempty"`
-	Payload        json.RawMessage `json:"payload,omitempty"`
+	Type           string `json:"type"`
+	ConversationID string `json:"conversationId,omitempty"`
+	Sender         string `json:"sender,omitempty"`
+	Receiver       string `json:"receiver,omitempty"`
+
+	// message.send için:
+	Body string `json:"body,omitempty"`
+	TS   int64  `json:"ts,omitempty"`
+
+	// message.read vb. için:
+	Payload     json.RawMessage `json:"payload,omitempty"`
+	ClientMsgID string          `json:"clientMsgId,omitempty"`
 }
 
 type PresencePayload struct {

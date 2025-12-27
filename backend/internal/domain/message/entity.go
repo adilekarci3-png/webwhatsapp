@@ -9,4 +9,6 @@ type Message struct {
 	Status         string
 	CreatedAtUnix  int64
 	ReadAtUnix     *int64
+
+	ClientMsgID string // ✅
 }

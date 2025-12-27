@@ -1,9 +1,10 @@
 -- 01_create_dbs.sql
+-- Creates app role + app database
 
--- 1) Uygulama kullanıcısı (login)
+-- 1) App user (login)
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'webwhatsapp_user') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'webwhatsapp_user') THEN
     CREATE ROLE webwhatsapp_user LOGIN PASSWORD 'WebWhatsappPass123!';
   ELSE
     ALTER ROLE webwhatsapp_user WITH LOGIN PASSWORD 'WebWhatsappPass123!';
@@ -11,10 +12,11 @@ BEGIN
 END
 $$;
 
--- 2) DB yoksa oluştur
-SELECT 'CREATE DATABASE webwhatsapp_db OWNER webwhatsapp_user'
-WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'webwhatsapp_db')
+-- 2) Create DB if missing (match backend: db=webwhatsapp)
+SELECT 'CREATE DATABASE webwhatsapp OWNER webwhatsapp_user'
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'webwhatsapp')
 \gexec
 
--- 3) DB yetkileri
-GRANT ALL PRIVILEGES ON DATABASE webwhatsapp_db TO webwhatsapp_user;
+-- 3) Grant
+GRANT ALL PRIVILEGES ON DATABASE webwhatsapp TO webwhatsapp_user;
+ALTER DATABASE webwhatsapp OWNER TO webwhatsapp_user;

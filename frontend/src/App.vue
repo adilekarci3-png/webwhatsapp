@@ -1,15 +1,14 @@
 <template>
   <div style="max-width: 1100px; margin: 24px auto; font-family: Arial, sans-serif;">
-    <h2 style="margin: 0 0 12px;">Web WhatsApp (Demo)</h2>
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+      <h2 style="margin: 0;">Web WhatsApp (Demo)</h2>
 
-    <!-- Connect Bar -->
-    <div style="display:flex; gap:10px; margin-bottom:10px; flex-wrap:wrap; align-items:center;">
-      <input v-model="conversationId" placeholder="conversationId / room" style="padding:8px; width:220px;" />
-      <input v-model="sender" placeholder="sender / user" style="padding:8px; width:160px;" />
-      <input v-model="receiver" placeholder="receiver / to" style="padding:8px; width:160px;" />
-      <button @click="connect" :disabled="connected" style="padding:8px 12px;">Bağlan</button>
-      <button @click="disconnect" :disabled="!connected" style="padding:8px 12px;">Çık</button>
+      <!-- Connection badge -->
+      <span :style="connBadgeStyle">
+        {{ connLabel }}
+      </span>
 
+      <!-- Small meta -->
       <span style="margin-left:auto; font-size:12px; color:#666;">
         Durum:
         <b v-if="typing">yazıyor…</b>
@@ -18,16 +17,52 @@
       </span>
     </div>
 
+    <!-- Connect Bar -->
+    <div style="display:flex; gap:10px; margin-bottom:10px; flex-wrap:wrap; align-items:center;">
+      <input v-model="conversationId" placeholder="conversationId / room" style="padding:8px; width:220px;" />
+      <input v-model="sender" placeholder="sender / user" style="padding:8px; width:160px;" />
+      <input v-model="receiver" placeholder="receiver / to" style="padding:8px; width:160px;" />
+
+      <button @click="connect" :disabled="connected || connecting" style="padding:8px 12px;">
+        {{ connecting ? "Bağlanıyor..." : "Bağlan" }}
+      </button>
+      <button @click="disconnect" :disabled="!connected && !connecting" style="padding:8px 12px;">
+        Çık
+      </button>
+
+      <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:#444;">
+        <input type="checkbox" v-model="autoReconnect" />
+        Otomatik tekrar bağlan
+      </label>
+
+      <button @click="clearChat" style="padding:8px 12px;">Temizle</button>
+    </div>
+
+    <!-- Error banner -->
+    <div v-if="errorText"
+      style="margin: 8px 0; padding: 10px 12px; border:1px solid #f3c2c2; background:#fff5f5; border-radius:10px; color:#8a1f1f;">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <b>Hata:</b>
+        <span style="flex:1;">{{ errorText }}</span>
+        <button @click="errorText = ''" style="padding:6px 10px;">Kapat</button>
+      </div>
+    </div>
+
     <!-- Chat Box -->
-    <div style="border:1px solid #ddd; border-radius:10px; height:430px; overflow:auto; background:#f0f2f5; padding:12px;">
+    <div ref="chatBoxRef"
+      style="border:1px solid #ddd; border-radius:10px; height:430px; overflow:auto; background:#f0f2f5; padding:12px;">
+      <!-- Loading history -->
+      <div v-if="loadingHistory" style="text-align:center; color:#666; padding:14px 0;">
+        Geçmiş yükleniyor...
+      </div>
+
       <div v-for="m in messages" :key="m.id" style="display:flex; margin:8px 0;"
-           :style="{ justifyContent: m.sender === sender ? 'flex-end' : 'flex-start' }">
-        <div
-          :style="bubbleStyle(m)"
-        >
+        :style="{ justifyContent: m.sender === sender ? 'flex-end' : 'flex-start' }">
+        <div :style="bubbleStyle(m)">
           <div style="white-space:pre-wrap;">{{ m.body }}</div>
 
-          <div style="display:flex; gap:8px; justify-content:flex-end; align-items:center; margin-top:6px; font-size:11px; color:#666;">
+          <div
+            style="display:flex; gap:8px; justify-content:flex-end; align-items:center; margin-top:6px; font-size:11px; color:#666;">
             <span>{{ timeText(m.ts) }}</span>
 
             <!-- ticks only for my messages -->
@@ -37,30 +72,50 @@
           </div>
         </div>
       </div>
+
+      <!-- typing indicator bubble -->
+      <div v-if="typing" style="display:flex; justify-content:flex-start; margin:8px 0;">
+        <div
+          style="background:#fff; padding:10px 12px; border-radius:12px; box-shadow:0 1px 2px rgba(0,0,0,0.08); font-size:12px; color:#666;">
+          yazıyor…
+        </div>
+      </div>
     </div>
 
     <!-- Composer -->
     <div style="display:flex; gap:10px; margin-top:10px; align-items:center;">
-      <input
-        v-model="text"
-        placeholder="Mesaj..."
-        style="flex:1; padding:12px; border:1px solid #ddd; border-radius:10px;"
-        @keyup.enter="send"
-        @input="onTyping"
-      />
+      <input v-model="text" placeholder="Mesaj..."
+        style="flex:1; padding:12px; border:1px solid #ddd; border-radius:10px;" @keyup.enter="send" @input="onTyping"
+        :disabled="!connected" />
       <button @click="send" :disabled="!connected || !text.trim()" style="padding:12px 14px; border-radius:10px;">
         Gönder
       </button>
     </div>
 
+    <!-- Debug / Footer -->
     <div style="margin-top:10px; color:#666; font-size:12px;">
       API Base: {{ apiBase }} | WS: {{ wsBase }} | room: {{ conversationId }} | me: {{ sender }} | to: {{ receiver }}
+    </div>
+
+    <!-- Mini log panel -->
+    <div style="margin-top:10px; border:1px solid #eee; border-radius:10px; padding:10px; background:#fff;">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <b style="font-size:12px;">Log</b>
+        <span style="font-size:12px; color:#888;">(son 30)</span>
+        <button @click="logs = []" style="margin-left:auto; padding:6px 10px;">Log temizle</button>
+      </div>
+      <div
+        style="margin-top:8px; max-height:130px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:11px; color:#333;">
+        <div v-for="(l, idx) in logs" :key="idx" style="padding:2px 0; border-bottom:1px dashed #f0f0f0;">
+          {{ l }}
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 
 type MessageDTO = {
   id: string;
@@ -71,9 +126,12 @@ type MessageDTO = {
   ts: number;
   status?: "SENT" | "ACK" | "READ";
   readAtUnix?: number | null;
+
+  // ✅ client-side only or server echoed
+  clientMsgId?: string;
+  pending?: boolean; // ✅ optimistic işaret
 };
 
-// generic WS envelope
 type WsEvent =
   | { type: "error"; error: string }
   | { type: "presence.update"; conversationId?: string; sender?: string; payload?: { online: boolean; lastSeenAt?: number } }
@@ -87,26 +145,76 @@ const wsBase = (import.meta.env.VITE_WS_URL as string) || "/ws";
 
 const conversationId = ref<string>("general");
 const sender = ref<string>("ali");
-const receiver = ref<string>("adile"); // ✅ 1-1 okundu için gerekli
+const receiver = ref<string>("adile");
 
 const text = ref<string>("");
 const connected = ref<boolean>(false);
-const messages = ref<MessageDTO[]>([]);
+const connecting = ref<boolean>(false);
+const loadingHistory = ref<boolean>(false);
 
+const messages = ref<MessageDTO[]>([]);
 let ws: WebSocket | null = null;
 
-// presence + typing state
+// presence + typing
 const presenceOnline = ref<boolean>(false);
 const lastSeenAt = ref<number | null>(null);
 const typing = ref<boolean>(false);
 
-let typingTimer: number | null = null;
+// UI helpers
+const errorText = ref<string>("");
+const logs = ref<string[]>([]);
+const autoReconnect = ref<boolean>(true);
+let reconnectTimer: number | null = null;
+
+const chatBoxRef = ref<HTMLElement | null>(null);
+
+function logLine(s: string) {
+  const t = new Date().toLocaleTimeString();
+  logs.value.unshift(`[${t}] ${s}`);
+  if (logs.value.length > 30) logs.value = logs.value.slice(0, 30);
+}
+
+function setError(s: string) {
+  errorText.value = s;
+  logLine(`ERROR: ${s}`);
+}
+
+const connLabel = computed(() => {
+  if (connecting.value) return "connecting";
+  if (connected.value) return "connected";
+  return "disconnected";
+});
+
+const connBadgeStyle = computed<Record<string, string>>(() => {
+  const base: Record<string, string> = {
+    fontSize: "12px",
+    padding: "4px 10px",
+    borderRadius: "999px",
+    border: "1px solid #ddd",
+    background: "#fff",
+    color: "#333",
+  };
+  if (connecting.value) {
+    base.border = "1px solid #f0d28a";
+    base.background = "#fff8e6";
+    base.color = "#7a5a00";
+  } else if (connected.value) {
+    base.border = "1px solid #a7e3b2";
+    base.background = "#eefcf1";
+    base.color = "#116b2b";
+  } else {
+    base.border = "1px solid #f3c2c2";
+    base.background = "#fff5f5";
+    base.color = "#8a1f1f";
+  }
+  return base;
+});
 
 const wsUrl = computed(() => {
   const q = new URLSearchParams({
     conversationId: conversationId.value,
     sender: sender.value,
-    receiver: receiver.value, // ✅
+    receiver: receiver.value,
   });
 
   if (wsBase.startsWith("ws://") || wsBase.startsWith("wss://")) {
@@ -137,30 +245,56 @@ function bubbleStyle(m: MessageDTO): Record<string, string> {
 }
 
 function tickText(m: MessageDTO): string {
-  // minimal: SENT -> ✓, ACK/READ -> ✓✓
+  if (m.pending) return "⏳"; // optimistic gönderiliyor
   const st = m.status || "SENT";
   if (st === "SENT") return "✓";
   return "✓✓";
 }
 
 function tickColor(m: MessageDTO): string {
-  // READ -> whatsapp blue
   if (m.status === "READ") return "#53bdeb";
   return "#667781";
 }
 
 async function loadHistory(): Promise<void> {
-  const url = `${apiBase}/messages?conversationId=${encodeURIComponent(conversationId.value)}&limit=50`;
-  const resp = await fetch(url);
-  const data = (await resp.json()) as MessageDTO[];
-  messages.value = data.slice().reverse();
+  loadingHistory.value = true;
+  try {
+    const url = `${apiBase}/messages?conversationId=${encodeURIComponent(conversationId.value)}&limit=50`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const t = await resp.text();
+      throw new Error(`History ${resp.status}: ${t}`);
+    }
+    const data = (await resp.json()) as MessageDTO[];
+    messages.value = data.slice().reverse();
+    logLine(`History loaded (${messages.value.length})`);
+    await nextTick();
+    scrollToBottom();
+  } catch (e: any) {
+    setError(e?.message || "History load failed");
+  } finally {
+    loadingHistory.value = false;
+  }
 }
+
+function scrollToBottom() {
+  const el = chatBoxRef.value;
+  if (!el) return;
+  el.scrollTop = el.scrollHeight;
+}
+
+watch(
+  () => messages.value.length,
+  async () => {
+    await nextTick();
+    scrollToBottom();
+  }
+);
 
 function applyReadEvent(messageIds: string[]): void {
   if (!messageIds?.length) return;
   const set = new Set(messageIds);
   for (const m of messages.value) {
-    // karşı taraf benim mesajlarımı okuduysa => benim mesajlarım READ
     if (m.sender === sender.value && set.has(m.id)) {
       m.status = "READ";
       m.readAtUnix = Math.floor(Date.now() / 1000);
@@ -168,12 +302,11 @@ function applyReadEvent(messageIds: string[]): void {
   }
 }
 
-// sohbet açılınca / yeni mesaj gelince, karşıdan gelen unread mesajları okundu yap
 function markUnreadAsRead(): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
   const unreadIds = messages.value
-    .filter(m => m.sender !== sender.value)        // karşıdan gelen
+    .filter(m => m.sender !== sender.value)
     .filter(m => !m.readAtUnix && m.status !== "READ")
     .map(m => m.id);
 
@@ -187,12 +320,14 @@ function markUnreadAsRead(): void {
       readAt: Math.floor(Date.now() / 1000),
     },
   }));
+  logLine(`MarkRead sent (${unreadIds.length})`);
 }
+
+let typingTimer: number | null = null;
 
 function onTyping(): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-  // start typing (throttle)
   ws.send(JSON.stringify({ type: "typing.start", conversationId: conversationId.value }));
 
   if (typingTimer) window.clearTimeout(typingTimer);
@@ -204,96 +339,167 @@ function onTyping(): void {
   }, 1500);
 }
 
+function scheduleReconnect() {
+  if (!autoReconnect.value) return;
+  if (reconnectTimer) return;
+
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = null;
+    if (!connected.value && !connecting.value) {
+      logLine("Auto reconnect...");
+      connect();
+    }
+  }, 1200);
+}
+
 async function connect(): Promise<void> {
+  errorText.value = "";
+  if (connected.value || connecting.value) return;
+
+  connecting.value = true;
+  logLine(`Connecting -> ${wsUrl.value}`);
+
   await loadHistory();
 
-  ws = new WebSocket(wsUrl.value);
+  try {
+    ws = new WebSocket(wsUrl.value);
 
-  ws.onopen = () => {
-    connected.value = true;
-    // sohbet açılınca mevcut unread’ları okundu yap
-    markUnreadAsRead();
-  };
+    ws.onopen = () => {
+      connected.value = true;
+      connecting.value = false;
+      logLine("WS open");
+      markUnreadAsRead();
+    };
 
-  ws.onmessage = (e: MessageEvent<string>) => {
-    let obj: WsEvent | null = null;
+    ws.onmessage = (e: MessageEvent<string>) => {
+      let obj: WsEvent | null = null;
 
-    try {
-      obj = JSON.parse(e.data) as WsEvent;
-    } catch {
-      // eski plain-text akış gelirse ignore (sende artık JSON DTO bekliyoruz)
-      return;
-    }
-
-    if (!obj) return;
-
-    if ((obj as any).type === "error") return;
-
-    // presence
-    if ((obj as any).type === "presence.update") {
-      const p = (obj as any).payload;
-      if (p?.online === true) {
-        presenceOnline.value = true;
-      } else {
-        presenceOnline.value = false;
-        if (typeof p?.lastSeenAt === "number") lastSeenAt.value = p.lastSeenAt;
+      try {
+        obj = JSON.parse(e.data) as WsEvent;
+      } catch {
+        // plain-text ignore
+        logLine("WS non-JSON frame ignored");
+        return;
       }
-      return;
-    }
 
-    // typing
-    if ((obj as any).type === "typing") {
-      const p = (obj as any).payload;
-      typing.value = !!p?.isTyping;
-      return;
-    }
+      if (!obj) return;
 
-    // read event
-    if ((obj as any).type === "message.read") {
-      const p = (obj as any).payload;
-      if (p?.messageIds?.length) applyReadEvent(p.messageIds);
-      return;
-    }
-
-    // ack (opsiyonel)
-    if ((obj as any).type === "message.ack") {
-      const id = (obj as any).messageId;
-      const msg = messages.value.find(x => x.id === id);
-      if (msg) msg.status = "ACK";
-      return;
-    }
-
-    // message dto
-    const m = obj as MessageDTO;
-    if (m && m.id && m.conversationId) {
-      messages.value.push(m);
-
-      // yeni mesaj karşıdan geldiyse otomatik okundu yap
-      if (m.sender !== sender.value) {
-        // küçük gecikme: UI render sonrası
-        setTimeout(() => markUnreadAsRead(), 50);
+      // 1) error
+      if ((obj as any).type === "error") {
+        setError((obj as any).error || "WS error");
+        return;
       }
-    }
-  };
 
-  ws.onclose = () => {
-    connected.value = false;
-    ws = null;
-    typing.value = false;
-    presenceOnline.value = false;
-  };
+      // 2) presence
+      if ((obj as any).type === "presence.update") {
+        const p = (obj as any).payload;
+        presenceOnline.value = !!p?.online;
+        if (!p?.online && typeof p?.lastSeenAt === "number") lastSeenAt.value = p.lastSeenAt;
+        return;
+      }
 
-  ws.onerror = () => {
+      // 3) typing
+      if ((obj as any).type === "typing") {
+        const p = (obj as any).payload;
+        typing.value = !!p?.isTyping;
+        return;
+      }
+
+      // 4) read event
+      if ((obj as any).type === "message.read") {
+        const p = (obj as any).payload;
+        if (p?.messageIds?.length) applyReadEvent(p.messageIds);
+        return;
+      }
+
+      // 5) ack event (pending -> false + ACK)
+      if ((obj as any).type === "message.ack") {
+        const id = (obj as any).messageId as string;
+
+        const msg = messages.value.find(x => x.id === id || x.clientMsgId === id);
+        if (msg) {
+          msg.status = "ACK";
+          msg.pending = false;
+        }
+        return;
+      }
+
+      // 6) MessageDTO
+      const m = obj as MessageDTO;
+      if (m && m.id && m.conversationId) {
+
+        // 6.1) Eğer server clientMsgId echo ediyorsa optimistic mesajı replace et
+        if (m.clientMsgId) {
+          const idx = messages.value.findIndex(x => x.clientMsgId === m.clientMsgId);
+          if (idx >= 0) {
+            messages.value[idx] = {
+              ...messages.value[idx],
+              ...m,
+              pending: false,
+            };
+            // karşıdan geldiyse okundu işaretle
+            if (m.sender !== sender.value) {
+              setTimeout(() => markUnreadAsRead(), 50);
+            }
+            return;
+          }
+        }
+
+        // 6.2) Duplicate guard: aynı id zaten varsa tekrar ekleme
+        if (messages.value.some(x => x.id === m.id)) {
+          return;
+        }
+
+        // 6.3) Normal ekle
+        messages.value.push({ ...m, pending: false });
+
+        if (m.sender !== sender.value) {
+          setTimeout(() => markUnreadAsRead(), 50);
+        }
+      }
+    };
+
+
+    ws.onclose = () => {
+      logLine("WS close");
+      connected.value = false;
+      connecting.value = false;
+      ws = null;
+      typing.value = false;
+      presenceOnline.value = false;
+      scheduleReconnect();
+    };
+
+    ws.onerror = () => {
+      setError("WS error event");
+      connected.value = false;
+      connecting.value = false;
+      scheduleReconnect();
+    };
+  } catch (e: any) {
+    setError(e?.message || "Connect failed");
     connected.value = false;
-  };
+    connecting.value = false;
+    scheduleReconnect();
+  }
 }
 
 function disconnect(): void {
+  if (reconnectTimer) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   if (ws) ws.close();
   ws = null;
   connected.value = false;
+  connecting.value = false;
   typing.value = false;
   presenceOnline.value = false;
+  logLine("Disconnected");
+}
+
+function makeClientMsgId(): string {
+  return `c_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
 function send(): void {
@@ -301,16 +507,38 @@ function send(): void {
   const body = text.value.trim();
   if (!body) return;
 
+  const now = Math.floor(Date.now() / 1000);
+  const clientMsgId = makeClientMsgId();
+
+  // ✅ 1) Optimistic mesajı hemen UI'a bas
+  messages.value.push({
+    id: clientMsgId,                 // geçici id
+    clientMsgId,                     // eşleştirme anahtarı
+    conversationId: conversationId.value,
+    sender: sender.value,
+    receiver: receiver.value,
+    body,
+    ts: now,
+    status: "SENT",
+    pending: true,
+  });
+
+  // ✅ 2) Server'a gönder (clientMsgId dahil)
   ws.send(JSON.stringify({
     type: "message.send",
     conversationId: conversationId.value,
     sender: sender.value,
     receiver: receiver.value,
     body,
-    ts: Math.floor(Date.now() / 1000),
+    ts: now,
+    clientMsgId, // ✅
   }));
 
   text.value = "";
+}
+function clearChat() {
+  messages.value = [];
+  logLine("Chat cleared");
 }
 
 onBeforeUnmount(() => disconnect());

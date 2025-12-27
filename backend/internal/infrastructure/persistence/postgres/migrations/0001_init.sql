@@ -22,3 +22,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_receiver_read
 -- conversation + receiver + read state (WhatsApp-style queries)
 CREATE INDEX IF NOT EXISTS idx_messages_conv_receiver_read
   ON public.messages (conversation_id, receiver, read_at_unix);
+
+ALTER TABLE public.messages
+ADD COLUMN IF NOT EXISTS client_msg_id text;
+
+CREATE INDEX IF NOT EXISTS idx_messages_client_msg_id
+ON public.messages (client_msg_id);
