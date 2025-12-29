@@ -1,0 +1,27 @@
+services:
+  ssh-tunnel:
+    image: alpine:3.20
+    container_name: wa-ssh-tunnel
+    restart: unless-stopped
+    env_file:
+      - .env.tunnel
+    ports:
+      - "127.0.0.1:${LOCAL_PG_PORT}:${LOCAL_PG_PORT}"
+      - "127.0.0.1:${LOCAL_REDIS_PORT}:${LOCAL_REDIS_PORT}"
+    command: >
+      sh -lc "
+        set -e;
+        apk add --no-cache openssh-client sshpass;
+        echo 'Starting SSH tunnel...';
+        echo 'Forward PG:   127.0.0.1:${LOCAL_PG_PORT} -> ${SSH_HOST}:${REMOTE_PG_HOST}:${REMOTE_PG_PORT}';
+        echo 'Forward Redis:127.0.0.1:${LOCAL_REDIS_PORT} -> ${SSH_HOST}:${REMOTE_REDIS_HOST}:${REMOTE_REDIS_PORT}';
+        exec sshpass -p \"$SSH_PASSWORD\" ssh -N
+          -L 0.0.0.0:${LOCAL_PG_PORT}:${REMOTE_PG_HOST}:${REMOTE_PG_PORT}
+          -L 0.0.0.0:${LOCAL_REDIS_PORT}:${REMOTE_REDIS_HOST}:${REMOTE_REDIS_PORT}
+          -p ${SSH_PORT} ${SSH_USER}@${SSH_HOST}
+          -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+          -o ServerAliveInterval=30
+          -o ServerAliveCountMax=3
+          -o ExitOnForwardFailure=yes
+      "

@@ -1,22 +1,36 @@
--- 01_create_dbs.sql
--- Creates app role + app database
+-- ./postgres/init/01-init.sql
+-- Bu script "ilk init" sırasında (data boşken) çalışır.
 
--- 1) App user (login)
-DO $$
+DO
+$$
 BEGIN
+  -- Role yoksa oluştur
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'webwhatsapp_user') THEN
     CREATE ROLE webwhatsapp_user LOGIN PASSWORD 'WebWhatsappPass123!';
-  ELSE
-    ALTER ROLE webwhatsapp_user WITH LOGIN PASSWORD 'WebWhatsappPass123!';
   END IF;
 END
 $$;
 
--- 2) Create DB if missing (match backend: db=webwhatsapp)
-SELECT 'CREATE DATABASE webwhatsapp OWNER webwhatsapp_user'
-WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'webwhatsapp')
-\gexec
+-- DB yoksa oluştur (NOT: CREATE DATABASE transaction içinde olamaz, bu yüzden DO dışında)
+SELECT 'CREATE DATABASE webwhatsapp_db OWNER webwhatsapp_user'
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'webwhatsapp_db') \gexec
 
--- 3) Grant
-GRANT ALL PRIVILEGES ON DATABASE webwhatsapp TO webwhatsapp_user;
-ALTER DATABASE webwhatsapp OWNER TO webwhatsapp_user;
+-- Yetkiler
+GRANT ALL PRIVILEGES ON DATABASE webwhatsapp_db TO webwhatsapp_user;
+
+-- public schema standart/temiz yetki
+\connect webwhatsapp_db
+
+-- public schema sahibini ayarla
+ALTER SCHEMA public OWNER TO webwhatsapp_user;
+
+-- schema üstünde yetki
+GRANT ALL ON SCHEMA public TO webwhatsapp_user;
+
+-- default privileges (ileride oluşacak tablolar için)
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+GRANT ALL ON TABLES TO webwhatsapp_user;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+GRANT ALL ON SEQUENCES TO webwhatsapp_user;
+
