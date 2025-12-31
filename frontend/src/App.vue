@@ -94,7 +94,8 @@
 
     <!-- Debug / Footer -->
     <div style="margin-top:10px; color:#666; font-size:12px;">
-      API Base: {{ apiBase }} | WS: {{ wsBase }} | room: {{ conversationId }} | me: {{ sender }} | to: {{ receiver }}
+      API Base: {{ apiBase }} | WS: {{ wsBase }} | room(effective): {{ effectiveConversationId }} | me: {{ sender }} |
+      to: {{ receiver }}
     </div>
 
     <!-- Mini log panel -->
@@ -127,9 +128,8 @@ type MessageDTO = {
   status?: "SENT" | "ACK" | "READ";
   readAtUnix?: number | null;
 
-  // ✅ client-side only or server echoed
   clientMsgId?: string;
-  pending?: boolean; // ✅ optimistic işaret
+  pending?: boolean;
 };
 
 type WsEvent =
@@ -137,7 +137,7 @@ type WsEvent =
   | { type: "presence.update"; conversationId?: string; sender?: string; payload?: { online: boolean; lastSeenAt?: number } }
   | { type: "typing"; conversationId?: string; sender?: string; payload?: { isTyping: boolean } }
   | { type: "message.read"; conversationId?: string; sender?: string; receiver?: string; payload?: { messageIds: string[]; readAt: number } }
-  | { type: "message.ack"; messageId: string; status?: "ACK" }
+  | { type: "message.ack"; messageId: string; clientMsgId?: string; status?: "ACK" }
   | MessageDTO;
 
 const apiBase = (import.meta.env.VITE_API_BASE as string) || "/api";
@@ -210,9 +210,42 @@ const connBadgeStyle = computed<Record<string, string>>(() => {
   return base;
 });
 
+function normalizeUser(u: string) {
+  return (u || "").trim().toLowerCase();
+}
+
+// DM id: dm:<a>:<b> (sıralı)
+function dmConversationId(a: string, b: string): string {
+  const x = normalizeUser(a);
+  const y = normalizeUser(b);
+  if (!x || !y) return "general";
+  const [p, q] = [x, y].sort();
+  return `dm:${p}:${q}`;
+}
+
+// ✅ Tek kaynak: effectiveConversationId
+const effectiveConversationId = computed(() => {
+  const cid = (conversationId.value || "").trim();
+
+  // Kullanıcı dm: yazdıysa normalize et
+  if (cid.startsWith("dm:")) {
+    // dm:ali:adile formatını zorla (mevcut değer hatalıysa sender/receiver'dan üret)
+    const a = normalizeUser(sender.value);
+    const b = normalizeUser(receiver.value);
+    return dmConversationId(a, b);
+  }
+
+  // custom room adı girilmişse aynen kullan (general hariç)
+  if (cid && cid !== "general") return cid;
+
+  // general => eğer receiver varsa DM'e geçmek istiyorsan burada otomatik dm yapabilirsin.
+  // Şimdilik: general seçiliyse general kalsın.
+  return "general";
+});
+
 const wsUrl = computed(() => {
   const q = new URLSearchParams({
-    conversationId: conversationId.value,
+    conversationId: effectiveConversationId.value,
     sender: sender.value,
     receiver: receiver.value,
   });
@@ -245,7 +278,7 @@ function bubbleStyle(m: MessageDTO): Record<string, string> {
 }
 
 function tickText(m: MessageDTO): string {
-  if (m.pending) return "⏳"; // optimistic gönderiliyor
+  if (m.pending) return "⏳";
   const st = m.status || "SENT";
   if (st === "SENT") return "✓";
   return "✓✓";
@@ -259,7 +292,7 @@ function tickColor(m: MessageDTO): string {
 async function loadHistory(): Promise<void> {
   loadingHistory.value = true;
   try {
-    const url = `${apiBase}/messages?conversationId=${encodeURIComponent(conversationId.value)}&limit=50`;
+    const url = `${apiBase}/messages?conversationId=${encodeURIComponent(effectiveConversationId.value)}&limit=50`;
     const resp = await fetch(url);
     if (!resp.ok) {
       const t = await resp.text();
@@ -314,7 +347,7 @@ function markUnreadAsRead(): void {
 
   ws.send(JSON.stringify({
     type: "message.read",
-    conversationId: conversationId.value,
+    conversationId: effectiveConversationId.value,
     payload: {
       messageIds: unreadIds,
       readAt: Math.floor(Date.now() / 1000),
@@ -328,12 +361,18 @@ let typingTimer: number | null = null;
 function onTyping(): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-  ws.send(JSON.stringify({ type: "typing.start", conversationId: conversationId.value }));
+  ws.send(JSON.stringify({
+    type: "typing.start",
+    conversationId: effectiveConversationId.value,
+  }));
 
   if (typingTimer) window.clearTimeout(typingTimer);
   typingTimer = window.setTimeout(() => {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "typing.stop", conversationId: conversationId.value }));
+      ws.send(JSON.stringify({
+        type: "typing.stop",
+        conversationId: effectiveConversationId.value,
+      }));
     }
     typingTimer = null;
   }, 1500);
@@ -377,7 +416,6 @@ async function connect(): Promise<void> {
       try {
         obj = JSON.parse(e.data) as WsEvent;
       } catch {
-        // plain-text ignore
         logLine("WS non-JSON frame ignored");
         return;
       }
@@ -414,10 +452,16 @@ async function connect(): Promise<void> {
 
       // 5) ack event (pending -> false + ACK)
       if ((obj as any).type === "message.ack") {
-        const id = (obj as any).messageId as string;
+        const clientMsgId = (obj as any).clientMsgId as string | undefined;
+        const messageId = (obj as any).messageId as string;
 
-        const msg = messages.value.find(x => x.id === id || x.clientMsgId === id);
+        // önce clientMsgId ile bul
+        let msg = clientMsgId ? messages.value.find(x => x.clientMsgId === clientMsgId) : undefined;
+        // fallback: id ile bul
+        if (!msg) msg = messages.value.find(x => x.id === messageId);
+
         if (msg) {
+          msg.id = messageId;     // ✅ gerçek id ile replace
           msg.status = "ACK";
           msg.pending = false;
         }
@@ -426,39 +470,41 @@ async function connect(): Promise<void> {
 
       // 6) MessageDTO
       const m = obj as MessageDTO;
-      if (m && m.id && m.conversationId) {
+      if (!m || !m.id || !m.conversationId) return;
 
-        // 6.1) Eğer server clientMsgId echo ediyorsa optimistic mesajı replace et
-        if (m.clientMsgId) {
-          const idx = messages.value.findIndex(x => x.clientMsgId === m.clientMsgId);
-          if (idx >= 0) {
-            messages.value[idx] = {
-              ...messages.value[idx],
-              ...m,
-              pending: false,
-            };
-            // karşıdan geldiyse okundu işaretle
-            if (m.sender !== sender.value) {
-              setTimeout(() => markUnreadAsRead(), 50);
-            }
-            return;
+      // ✅ yanlış conversation'dan geleni ignore
+      if (m.conversationId !== effectiveConversationId.value) {
+        logLine(`Ignored message from other conversation: ${m.conversationId}`);
+        return;
+      }
+
+      // 6.1) optimistic replace (clientMsgId varsa)
+      if (m.clientMsgId) {
+        const idx = messages.value.findIndex(x => x.clientMsgId === m.clientMsgId);
+        if (idx >= 0) {
+          messages.value[idx] = {
+            ...messages.value[idx],
+            ...m,
+            pending: false,
+          };
+
+          if (m.sender !== sender.value) {
+            setTimeout(() => markUnreadAsRead(), 50);
           }
-        }
-
-        // 6.2) Duplicate guard: aynı id zaten varsa tekrar ekleme
-        if (messages.value.some(x => x.id === m.id)) {
           return;
         }
+      }
 
-        // 6.3) Normal ekle
-        messages.value.push({ ...m, pending: false });
+      // 6.2) duplicate guard
+      if (messages.value.some(x => x.id === m.id)) return;
 
-        if (m.sender !== sender.value) {
-          setTimeout(() => markUnreadAsRead(), 50);
-        }
+      // 6.3) normal push
+      messages.value.push({ ...m, pending: false });
+
+      if (m.sender !== sender.value) {
+        setTimeout(() => markUnreadAsRead(), 50);
       }
     };
-
 
     ws.onclose = () => {
       logLine("WS close");
@@ -504,17 +550,24 @@ function makeClientMsgId(): string {
 
 function send(): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
   const body = text.value.trim();
   if (!body) return;
+
+  // ✅ DM veya birebirde receiver zorunlu (room’da da isteğe bağlı bırakabilirsin)
+  if (effectiveConversationId.value.startsWith("dm:") && !receiver.value.trim()) {
+    setError("DM konuşmada receiver boş olamaz.");
+    return;
+  }
 
   const now = Math.floor(Date.now() / 1000);
   const clientMsgId = makeClientMsgId();
 
-  // ✅ 1) Optimistic mesajı hemen UI'a bas
+  // ✅ optimistic mesajı effectiveConversationId ile yaz
   messages.value.push({
-    id: clientMsgId,                 // geçici id
-    clientMsgId,                     // eşleştirme anahtarı
-    conversationId: conversationId.value,
+    id: clientMsgId,
+    clientMsgId,
+    conversationId: effectiveConversationId.value, // ✅
     sender: sender.value,
     receiver: receiver.value,
     body,
@@ -523,19 +576,18 @@ function send(): void {
     pending: true,
   });
 
-  // ✅ 2) Server'a gönder (clientMsgId dahil)
   ws.send(JSON.stringify({
     type: "message.send",
-    conversationId: conversationId.value,
-    sender: sender.value,
+    conversationId: effectiveConversationId.value, // ✅
     receiver: receiver.value,
     body,
     ts: now,
-    clientMsgId, // ✅
+    clientMsgId,
   }));
 
   text.value = "";
 }
+
 function clearChat() {
   messages.value = [];
   logLine("Chat cleared");

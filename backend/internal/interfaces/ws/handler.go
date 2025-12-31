@@ -3,6 +3,7 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -12,14 +13,6 @@ import (
 	"example.com/webwhatsapp/backend/internal/application/usecases/messaging"
 	"example.com/webwhatsapp/backend/internal/infrastructure/cache/redis"
 )
-
-/*
-	Bu Handler sürümünde kritik düzeltme:
-	- Vue JSON gönderiyor: { type:"message.send", conversationId, sender, receiver, body, ts }
-	- Önceki sürümde message.send case'i olmadığı için mesajlar "bilinmeyen event" olarak yutuluyordu.
-	- Ayrıca message.read publish'ini iki kez yapmamak için WS tarafındaki manuel publish kaldırıldı
-	  (MarkRead servis içinde publish ediyorsa).
-*/
 
 type Handler struct {
 	msgSvc *messaging.Service
@@ -43,10 +36,6 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 	if sender == "" {
 		sender = r.URL.Query().Get("user")
 	}
-	receiver := r.URL.Query().Get("receiver")
-	if receiver == "" {
-		receiver = r.URL.Query().Get("to")
-	}
 
 	if conv == "" {
 		http.Error(w, "conversationId (room) required", http.StatusBadRequest)
@@ -57,7 +46,6 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Degraded mode guard
 	if h.pubsub == nil || h.msgSvc == nil {
 		http.Error(w, "websocket service unavailable", http.StatusServiceUnavailable)
 		return
@@ -101,121 +89,103 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		// 1) JSON event mi?
+		// Yalnızca JSON event kabul ediyoruz (legacy text kaldırıldı)
 		var ev Event
-		if json.Unmarshal(payload, &ev) == nil && ev.Type != "" {
-			// default bind
-			if ev.ConversationID == "" {
-				ev.ConversationID = conv
-			}
-			if ev.Sender == "" {
-				ev.Sender = sender
-			}
-			if ev.Receiver == "" {
-				ev.Receiver = receiver
-			}
-
-			switch ev.Type {
-
-			case "typing.start":
-				_ = h.publishTyping(ctx, channel, ev.ConversationID, ev.Sender, true)
-				continue
-
-			case "typing.stop":
-				_ = h.publishTyping(ctx, channel, ev.ConversationID, ev.Sender, false)
-				continue
-
-			case "typing":
-				// Eğer client ileride direkt typing göndermeye geçerse destek olsun
-				var tp TypingPayload
-				_ = json.Unmarshal(ev.Payload, &tp)
-				_ = h.publishTyping(ctx, channel, ev.ConversationID, ev.Sender, tp.IsTyping)
-				continue
-
-			case "message.read":
-				// payload: {messageIds:[...], readAt:...}
-				var rp ReadPayload
-				_ = json.Unmarshal(ev.Payload, &rp)
-				if rp.ReadAt == 0 {
-					rp.ReadAt = time.Now().Unix()
-				}
-
-				// okuyan kişi bu bağlantının user'ıdır => sender parametresi
-				// NOT: msgSvc.MarkRead içinde publish yapıyorsanız burada ekstra publish yapmayın.
-				if err := h.msgSvc.MarkRead(ctx, ev.ConversationID, sender, rp.MessageIDs, rp.ReadAt); err != nil {
-					h.writeError(conn, err)
-					continue
-				}
-				continue
-
-			case "message.send":
-				// ✅ Vue buradan geliyor
-				body := strings.TrimSpace(ev.Body)
-				if body == "" {
-					// boş mesajı ignore
-					continue
-				}
-
-				in := messaging.SendMessageInput{
-					ConversationID: ev.ConversationID,
-					Sender:         ev.Sender,
-					Receiver:       ev.Receiver,
-					Body:           strings.TrimSpace(ev.Body),
-					TS:             ev.TS,
-					ClientMsgID:    ev.ClientMsgID, // ✅
-				}
-
-				msg, err := h.msgSvc.SendMessage(ctx, in)
-				if err != nil {
-					h.writeError(conn, err)
-					continue
-				}
-
-				// ACK (opsiyonel)
-				ack, _ := json.Marshal(map[string]any{
-					"type":      "message.ack",
-					"messageId": msg.ID,
-					"status":    "ACK",
-				})
-				_ = h.pubsub.Publish(ctx, channel, ack)
-				continue
-
-			default:
-				// bilinmeyen event: ignore
-				continue
-			}
-		}
-
-		// 2) Plain text geldiyse (legacy) => message.send gibi davran
-		body := strings.TrimSpace(string(payload))
-		if body == "" {
+		if json.Unmarshal(payload, &ev) != nil || ev.Type == "" {
 			continue
 		}
 
-		in := messaging.SendMessageInput{
-			ConversationID: conv,
-			Sender:         sender,
-			Receiver:       receiver,
-			Body:           body,
-		}
+		// ✅ conversationId ve sender SERVER tarafında sabitlenir
+		ev.ConversationID = conv
+		ev.Sender = sender
 
-		msg, err := h.msgSvc.SendMessage(ctx, in)
-		if err != nil {
-			h.writeError(conn, err)
+		switch ev.Type {
+
+		case "typing.start":
+			_ = h.publishTyping(ctx, channel, conv, sender, true)
+			continue
+
+		case "typing.stop":
+			_ = h.publishTyping(ctx, channel, conv, sender, false)
+			continue
+
+		case "message.read":
+			var rp ReadPayload
+			_ = json.Unmarshal(ev.Payload, &rp)
+			if rp.ReadAt == 0 {
+				rp.ReadAt = time.Now().Unix()
+			}
+
+			if err := h.msgSvc.MarkRead(ctx, conv, sender, rp.MessageIDs, rp.ReadAt); err != nil {
+				h.writeError(conn, err)
+				continue
+			}
+
+			// ✅ read event’i odaya yayınla (diğer istemciler double tick görsün)
+			out, _ := json.Marshal(map[string]any{
+				"type":           "message.read",
+				"conversationId": conv,
+				"sender":         sender,
+				"payload": map[string]any{
+					"messageIds": rp.MessageIDs,
+					"readAt":     rp.ReadAt,
+				},
+			})
+			_ = h.pubsub.Publish(ctx, channel, out)
+			continue
+
+		case "message.send":
+			body := strings.TrimSpace(ev.Body)
+			if body == "" {
+				continue
+			}
+
+			// ✅ oda sabitle: client event'i farklı conversationId ile gelirse reddet
+			// (Bu satır pratikte hep true olur çünkü ev.ConversationID zaten conv'a sabitlendi.
+			// Ama kalsın: ileride sabitlemeyi kaldırırsan güvenlik katmanı olur.)
+			if ev.ConversationID != "" && ev.ConversationID != conv {
+				h.writeError(conn, fmt.Errorf("conversationId mismatch"))
+				continue
+			}
+
+			in := messaging.SendMessageInput{
+				ConversationID: conv,        // ✅ URL'den gelen conv sabit
+				Sender:         sender,      // ✅ URL'den gelen sender sabit
+				Receiver:       ev.Receiver, // hedef
+				Body:           body,
+				TS:             ev.TS,
+				ClientMsgID:    ev.ClientMsgID,
+			}
+
+			msg, err := h.msgSvc.SendMessage(ctx, in)
+			if err != nil {
+				h.writeError(conn, err)
+				continue
+			}
+
+			// ✅ 1) Mesajı anlık dağıtım için Redis'e publish et
+			// msg MessageDTO ise direkt marshal uygundur
+			out, _ := json.Marshal(msg)
+			_ = h.pubsub.Publish(ctx, channel, out)
+
+			// ✅ 2) ACK sadece gönderene
+			ack, _ := json.Marshal(map[string]any{
+				"type":        "message.ack",
+				"messageId":   msg.ID,
+				"clientMsgId": in.ClientMsgID,
+				"status":      "ACK",
+			})
+			_ = conn.WriteMessage(websocket.TextMessage, ack)
+			continue
+
+		default:
+			// bilinmeyen event => ignore
 			continue
 		}
-
-		ack, _ := json.Marshal(map[string]any{
-			"type":      "message.ack",
-			"messageId": msg.ID,
-			"status":    "ACK",
-		})
-		_ = h.pubsub.Publish(ctx, channel, ack)
 	}
 
 	// DISCONNECT: presence offline
 	_ = h.publishPresence(ctx, channel, conv, sender, false, time.Now().Unix())
-
 	<-done
 }
 
