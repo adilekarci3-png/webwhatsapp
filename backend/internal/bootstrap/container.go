@@ -4,12 +4,15 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"time"
 
 	"example.com/webwhatsapp/backend/internal/application/usecases/messaging"
 	"example.com/webwhatsapp/backend/internal/infrastructure/cache/redis"
 	"example.com/webwhatsapp/backend/internal/infrastructure/config"
 	"example.com/webwhatsapp/backend/internal/infrastructure/persistence/postgres"
 	ihttp "example.com/webwhatsapp/backend/internal/interfaces/http"
+	httpauth "example.com/webwhatsapp/backend/internal/interfaces/http/auth"
 	"example.com/webwhatsapp/backend/internal/interfaces/ws"
 )
 
@@ -26,7 +29,7 @@ func Build() (*App, error) {
 
 	var (
 		pg     *postgres.DB
-		ps     *redis.PubSub // ✅ somut tip: ws.NewHandler bunu istiyor
+		ps     *redis.PubSub
 		msgSvc *messaging.Service
 	)
 
@@ -47,12 +50,10 @@ func Build() (*App, error) {
 	if err != nil {
 		log.Printf("startup warning: redis unavailable: %v", err)
 	} else {
-		ps = redis.NewPubSub(rdb) // *redis.PubSub
+		ps = redis.NewPubSub(rdb)
 	}
 
 	// ---------- Messaging Service ----------
-	// messaging.NewService ikinci parametre ports.Publisher ise,
-	// redis.PubSub'niz zaten Publish metoduyla uyumluydu.
 	if pg != nil && ps != nil {
 		msgRepo := postgres.NewMessageRepo(pg.Pool)
 		msgSvc = messaging.NewService(msgRepo, ps)
@@ -62,14 +63,48 @@ func Build() (*App, error) {
 	}
 
 	// ---------- WS + HTTP Router ----------
-	// ✅ ws handler: redis yoksa ps nil gider -> ws handler içinde 503 dönmeli
 	wsHandler := ws.NewHandler(msgSvc, ps)
-	router := ihttp.NewRouter(msgSvc, wsHandler)
 
+	// Prod tespiti: APP_ENV=prod|production ise CookieSecure=true
+	isProd := false
+	if env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))); env == "prod" || env == "production" {
+		isProd = true
+	}
+
+	// JWT config: cfg.JWT yerine ENV'den oku (cfg.Config'ta JWT alanı yoksa bile derlenir)
+	jwtCfg := httpauth.Config{
+		AccessSecret:  []byte(getEnv("JWT_ACCESS_SECRET", "change-me-access")),
+		RefreshSecret: []byte(getEnv("JWT_REFRESH_SECRET", "change-me-refresh")),
+		AccessTTL:     mustParseDuration(getEnv("JWT_ACCESS_TTL", "15m")),
+		RefreshTTL:    mustParseDuration(getEnv("JWT_REFRESH_TTL", "720h")), // 30 gün
+		CookieSecure:  isProd,
+		CookieDomain:  getEnv("JWT_COOKIE_DOMAIN", ""),
+	}
+
+	router := ihttp.NewRouter(msgSvc, wsHandler, jwtCfg)
+
+	// Port
 	port := os.Getenv("APP_PORT")
 	if port == "" {
 		port = "8080"
 	}
 
 	return &App{Port: port, Router: router}, nil
+}
+
+func getEnv(key, def string) string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	return v
+}
+
+func mustParseDuration(s string) time.Duration {
+	d, err := time.ParseDuration(strings.TrimSpace(s))
+	if err != nil {
+		// Güvenli fallback: parse edilemezse 15m
+		return 15 * time.Minute
+	}
+	return d
 }

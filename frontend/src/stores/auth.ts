@@ -1,21 +1,22 @@
-// src/stores/auth.ts
 import { defineStore } from "pinia";
+
+type User = { id: string; name: string };
 
 export const useAuthStore = defineStore("auth", {
   state: () => ({
-    token: "" as string,
-    user: null as null | { id: string; name: string },
+    accessToken: "" as string,
+    user: null as User | null,
   }),
   getters: {
-    isAuthenticated: (s) => !!s.token,
+    isAuthenticated: (s) => !!s.accessToken,
   },
   actions: {
-    setSession(token: string, user: { id: string; name: string }) {
-      this.token = token;
+    setSession(accessToken: string, user: User) {
+      this.accessToken = accessToken;
       this.user = user;
     },
     logout() {
-      this.token = "";
+      this.accessToken = "";
       this.user = null;
     },
   },

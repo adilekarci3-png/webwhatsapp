@@ -8,6 +8,16 @@ import (
 	"example.com/webwhatsapp/backend/internal/application/usecases/messaging"
 )
 
+// MessagesList godoc
+// @Summary List messages
+// @Description Returns messages for a conversation
+// @Tags messages
+// @Param conversationId query string true "Conversation ID"
+// @Param limit query int false "Max number of messages" default(50)
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]string
+// @Router /messages [get]
 func MessagesList(svc *messaging.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 

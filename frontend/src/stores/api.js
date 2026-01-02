@@ -1,9 +1,8 @@
-// api.js
 import axios from "axios";
 import { useAuthStore } from "@/stores/auth";
 
 export const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE,
+  baseURL: import.meta.env.VITE_API_BASE, // nginx ile /api olmalı
   withCredentials: true, // refresh cookie için şart
 });
 
@@ -38,8 +37,8 @@ api.interceptors.response.use(
 
     isRefreshing = true;
     try {
-      const r = await api.post("/auth/refresh"); // cookie ile
-      auth.accessToken = r.data.accessToken;
+      const r = await api.post("/auth/refresh");
+      auth.setAccessToken(r.data.accessToken);
 
       queue.forEach((p) => p.resolve());
       queue = [];

@@ -1,11 +1,9 @@
 services:
-
   postgres:
     image: postgres:16-alpine
     container_name: postgres
     restart: unless-stopped
     environment:
-      # superuser (sunucu standardı)
       POSTGRES_USER: ${POSTGRES_SUPERUSER:-pgadmin}
       POSTGRES_PASSWORD: ${POSTGRES_SUPERPASS:-SuperPass123!}
       POSTGRES_DB: ${POSTGRES_DB_DEFAULT:-template1}
@@ -38,6 +36,7 @@ services:
       - pgadmin_data:/var/lib/pgadmin
     networks: [dbnet]
 
+  # Local Redis (istersen kalsın; backend bunu kullanmayacak)
   redis:
     image: redis:7-alpine
     container_name: redis
@@ -52,6 +51,67 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    networks: [dbnet]
+
+  # SSH Tunnel -> remote 46.31.79.7:127.0.0.1:6379 => container :16379
+  redis_tunnel:
+    image: alpine:3.20
+    container_name: wa-redis-tunnel
+    restart: unless-stopped
+    volumes:
+      - ${SSH_DIR}:/ssh:ro
+    command: >
+      sh -lc '
+        set -eux;
+
+        apk add --no-cache openssh-client autossh netcat-openbsd;
+
+        mkdir -p /root/.ssh;
+        chmod 700 /root/.ssh;
+
+        test -f "/ssh/${SSH_KEY_FILE:-id_ed25519}" || (echo "ERROR: key not found: /ssh/${SSH_KEY_FILE:-id_ed25519}" && exit 1);
+
+        cp "/ssh/${SSH_KEY_FILE:-id_ed25519}" /root/.ssh/id_key;
+        chmod 600 /root/.ssh/id_key;
+        touch /root/.ssh/known_hosts;
+
+        echo "[redis_tunnel] ssh probe";
+        ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i /root/.ssh/id_key -T root@46.31.79.7 "echo ok" || true;
+
+        echo "[redis_tunnel] start autossh tunnel";
+        while true; do
+          autossh -M 0 -N -g \
+            -o "BatchMode=yes" \
+            -o "ServerAliveInterval=30" \
+            -o "ServerAliveCountMax=3" \
+            -o "StrictHostKeyChecking=accept-new" \
+            -i /root/.ssh/id_key \
+            -L 0.0.0.0:16379:127.0.0.1:6379 \
+            root@46.31.79.7 || true;
+
+          echo "[redis_tunnel] autossh exited; retry in 5s";
+          sleep 5;
+        done
+      '
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 16379"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [dbnet]
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: redisinsight
+    restart: unless-stopped
+    ports:
+      - "${REDISINSIGHT_HOST_PORT:-5540}:5540"
+    volumes:
+      - redisinsight:/data
+    depends_on:
+      redis_tunnel:
+        condition: service_healthy
     networks: [dbnet]
 
   minio:
@@ -69,11 +129,61 @@ services:
     volumes:
       - miniodata:${MINIO_DATA_DIR:-/data}
     healthcheck:
-      # MinIO image'inde curl olmayabiliyor; mc health daha stabil
       test: ["CMD-SHELL", "mc ready local || (mc alias set local http://localhost:9000 \"$MINIO_ROOT_USER\" \"$MINIO_ROOT_PASSWORD\" && mc ready local)"]
       interval: 10s
       timeout: 5s
       retries: 20
+    networks: [dbnet]
+
+  # SSH Tunnel -> remote 46.31.79.7:127.0.0.1:5432 => container :15432
+  pg_tunnel:
+    image: alpine:3.20
+    container_name: wa-pg-tunnel
+    restart: unless-stopped
+    volumes:
+      - ${SSH_DIR}:/ssh:ro
+    command: >
+      sh -lc '
+        set -eux;
+
+        apk add --no-cache openssh-client autossh netcat-openbsd;
+
+        mkdir -p /root/.ssh;
+        chmod 700 /root/.ssh;
+
+        test -f "/ssh/${SSH_KEY_FILE:-id_ed25519}" || (echo "ERROR: key not found: /ssh/${SSH_KEY_FILE:-id_ed25519}" && exit 1);
+
+        cp "/ssh/${SSH_KEY_FILE:-id_ed25519}" /root/.ssh/id_key;
+        chmod 600 /root/.ssh/id_key;
+        touch /root/.ssh/known_hosts;
+
+        echo "[pg_tunnel] ssh probe";
+        ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i /root/.ssh/id_key -T root@46.31.79.7 "echo ok" || true;
+
+        echo "[pg_tunnel] start autossh tunnel";
+        while true; do
+          autossh -M 0 -N -g \
+            -o "BatchMode=yes" \
+            -o "ServerAliveInterval=30" \
+            -o "ServerAliveCountMax=3" \
+            -o "StrictHostKeyChecking=accept-new" \
+            -i /root/.ssh/id_key \
+            -L 0.0.0.0:15432:127.0.0.1:5432 \
+            root@46.31.79.7 || true;
+
+          echo "[pg_tunnel] autossh exited; retry in 5s";
+          sleep 5;
+        done
+      '
+    # Hosttan da 15432 ile bağlanmak istiyorsan kalsın; istemiyorsan kaldır.
+    ports:
+      - "15432:15432"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 15432"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks: [dbnet]
 
   backend:
@@ -83,17 +193,19 @@ services:
     container_name: wa-backend
     restart: unless-stopped
     environment:
-      POSTGRES_HOST: host.docker.internal
-      POSTGRES_PORT: 15432
+      # ÖNEMLİ: burada SERVICE ADI kullan
+      POSTGRES_HOST: pg_tunnel
+      POSTGRES_PORT: "15432"
       POSTGRES_DB: webwhatsapp_db
       POSTGRES_USER: webwhatsapp_user
       POSTGRES_PASSWORD: WebWhatsappPass123!
-      PGSSLMODE: disable
+      PGSSLMODE: disable     
       MIGRATIONS_DIR: /app/internal/infrastructure/persistence/postgres/migrations
-      APP_ENV: docker
-      APP_PORT: "8080"    
+      APP_PORT: "8080"
+      APP_ENV: "docker"
 
-      REDIS_ADDR: redis:6379
+      # ÖNEMLİ: burada SERVICE ADI kullan
+      REDIS_ADDR: redis_tunnel:16379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-RedisPass123!}
 
       MINIO_ENDPOINT: minio:9000
@@ -101,10 +213,17 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
       MINIO_BUCKET: ${MINIO_BUCKET:-wa-media}
       MINIO_USE_SSL: "false"
+
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change-me-access}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change-me-refresh}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-720h}
+      JWT_COOKIE_DOMAIN: ${JWT_COOKIE_DOMAIN:-""}
+
     depends_on:
-      postgres:
+      pg_tunnel:
         condition: service_healthy
-      redis:
+      redis_tunnel:
         condition: service_healthy
       minio:
         condition: service_healthy
@@ -147,3 +266,4 @@ volumes:
   pgadmin_data:
   redisdata:
   miniodata:
+  redisinsight:
