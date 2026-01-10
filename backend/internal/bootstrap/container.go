@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	authuc "example.com/webwhatsapp/backend/internal/application/usecases/auth"
 	"example.com/webwhatsapp/backend/internal/application/usecases/messaging"
 	"example.com/webwhatsapp/backend/internal/infrastructure/cache/redis"
 	"example.com/webwhatsapp/backend/internal/infrastructure/config"
@@ -28,9 +29,10 @@ func Build() (*App, error) {
 	}
 
 	var (
-		pg     *postgres.DB
-		ps     *redis.PubSub
-		msgSvc *messaging.Service
+		pg      *postgres.DB
+		ps      *redis.PubSub
+		msgSvc  *messaging.Service
+		userSvc *authuc.UserService
 	)
 
 	// ---------- Postgres ----------
@@ -62,6 +64,18 @@ func Build() (*App, error) {
 		msgSvc = nil
 	}
 
+	// ---------- Auth (UserService) ----------
+	// Postgres varsa auth aktif olur. Yoksa userSvc nil kalır.
+	if pg != nil {
+		// Burada repo’nun pg.Pool (pgxpool) ile uyumlu olması gerekir.
+		// Eğer sen repo’yu *sql.DB ile yazdıysan, bunu pgxpool’a çevirmeliyiz.
+		userRepo := postgres.NewUserRepository(pg.Pool)
+		userSvc = authuc.NewUserService(userRepo)
+	} else {
+		log.Printf("starting in DEGRADED MODE: auth service is unavailable (postgres is nil)")
+		userSvc = nil
+	}
+
 	// ---------- WS + HTTP Router ----------
 	wsHandler := ws.NewHandler(msgSvc, ps)
 
@@ -81,7 +95,8 @@ func Build() (*App, error) {
 		CookieDomain:  getEnv("JWT_COOKIE_DOMAIN", ""),
 	}
 
-	router := ihttp.NewRouter(msgSvc, wsHandler, jwtCfg)
+	// Router’a userSvc enjekte et (NewRouter imzası bunu kabul etmeli)
+	router := ihttp.NewRouter(msgSvc, wsHandler, jwtCfg, userSvc)
 
 	// Port
 	port := os.Getenv("APP_PORT")

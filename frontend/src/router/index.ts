@@ -1,26 +1,42 @@
-import { createRouter, createWebHistory, type RouteLocationNormalized } from "vue-router";
+// src/router/index.ts
+import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router";
+import { useAuthStore } from "@/stores/auth";
+
 import LoginView from "@/views/LoginView.vue";
 import RegisterView from "@/views/RegisterView.vue";
 import HomeView from "@/views/HomeView.vue";
-import { useAuthStore } from "@/stores/auth";
+
+const routes: RouteRecordRaw[] = [
+  // Uygulama açılınca direkt login'e düşsün istiyorsan:
+  { path: "/", redirect: "/login" },
+
+  { path: "/login", name: "login", component: LoginView, meta: { guestOnly: true } },
+  { path: "/register", name: "register", component: RegisterView, meta: { guestOnly: true } },
+
+  // Korumalı alan
+  { path: "/app", name: "home", component: HomeView, meta: { requiresAuth: true } },
+
+  // 404 fallback
+  { path: "/:pathMatch(.*)*", redirect: "/login" },
+];
 
 const router = createRouter({
   history: createWebHistory(),
-  routes: [
-    { path: "/login", name: "login", component: LoginView },
-    { path: "/register", name: "register", component: RegisterView },
-    { path: "/", name: "home", component: HomeView, meta: { requiresAuth: true } },
-  ],
+  routes,
 });
 
-router.beforeEach((to: RouteLocationNormalized) => {
+// Auth guard
+router.beforeEach((to) => {
   const auth = useAuthStore();
-  if (to.meta.requiresAuth && !auth.isAuthenticated) {
-    return { name: "login" };
-  }
-  if ((to.name === "login" || to.name === "register") && auth.isAuthenticated) {
-    return { name: "home" };
-  }
+
+  const isAuthed = !!auth.accessToken; // store'unuzda token alanı bu isimde
+  const requiresAuth = !!to.meta.requiresAuth;
+  const guestOnly = !!to.meta.guestOnly;
+
+  if (requiresAuth && !isAuthed) return { name: "login" };
+  if (guestOnly && isAuthed) return { name: "home" };
+
+  return true;
 });
 
 export default router;
