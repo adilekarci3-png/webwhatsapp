@@ -4,12 +4,12 @@ services:
     container_name: postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_SUPERUSER:-pgadmin}
-      POSTGRES_PASSWORD: ${POSTGRES_SUPERPASS:-SuperPass123!}
-      POSTGRES_DB: ${POSTGRES_DB_DEFAULT:-template1}
+      POSTGRES_USER: ${POSTGRES_USER:-webwhatsapp_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-WebWhatsappPass123!}
+      POSTGRES_DB: ${POSTGRES_DB:-webwhatsapp_db}
     volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    - pgdata:/var/lib/postgresql/data
+    - ./postgres/init:/docker-entrypoint-initdb.d:ro
     ports:
       - "127.0.0.1:${POSTGRES_HOST_PORT:-55432}:5432"
     healthcheck:
@@ -191,19 +191,17 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: wa-backend
-    restart: unless-stopped
+    restart: unless-stopped   
     environment:
-      # ÖNEMLİ: burada SERVICE ADI kullan
       POSTGRES_HOST: pg_tunnel
       POSTGRES_PORT: "15432"
-      POSTGRES_DB: webwhatsapp_db
-      POSTGRES_USER: webwhatsapp_user
-      POSTGRES_PASSWORD: WebWhatsappPass123!
+      POSTGRES_DB: ${POSTGRES_DB:-webwhatsapp_db}
+      POSTGRES_USER: ${POSTGRES_USER:-webwhatsapp_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-WebWhatsappPass123!}
       PGSSLMODE: disable     
       MIGRATIONS_DIR: /app/internal/infrastructure/persistence/postgres/migrations
       APP_PORT: "8080"
       APP_ENV: "docker"
-
       # ÖNEMLİ: burada SERVICE ADI kullan
       REDIS_ADDR: redis_tunnel:16379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-RedisPass123!}
@@ -218,7 +216,7 @@ services:
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change-me-refresh}
       JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
       JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-720h}
-      JWT_COOKIE_DOMAIN: ${JWT_COOKIE_DOMAIN:-""}
+      JWT_COOKIE_DOMAIN: ""
 
     depends_on:
       pg_tunnel:

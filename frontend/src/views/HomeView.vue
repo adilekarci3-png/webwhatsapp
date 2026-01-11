@@ -117,7 +117,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-
+import { useAuthStore } from "@/stores/auth";
 type MessageDTO = {
   id: string;
   conversationId: string;
@@ -167,6 +167,7 @@ const autoReconnect = ref<boolean>(true);
 let reconnectTimer: number | null = null;
 
 const chatBoxRef = ref<HTMLElement | null>(null);
+const auth = useAuthStore(); 
 
 function logLine(s: string) {
   const t = new Date().toLocaleTimeString();
@@ -244,12 +245,16 @@ const effectiveConversationId = computed(() => {
 });
 
 const wsUrl = computed(() => {
+  const token = auth.accessToken || "";
+
   const q = new URLSearchParams({
     conversationId: effectiveConversationId.value,
     sender: sender.value,
     receiver: receiver.value,
   });
 
+  if (token) q.set("accessToken", token);
+  
   if (wsBase.startsWith("ws://") || wsBase.startsWith("wss://")) {
     return `${wsBase}?${q.toString()}`;
   }
@@ -293,11 +298,26 @@ async function loadHistory(): Promise<void> {
   loadingHistory.value = true;
   try {
     const url = `${apiBase}/messages?conversationId=${encodeURIComponent(effectiveConversationId.value)}&limit=50`;
-    const resp = await fetch(url);
+
+    const token = auth.accessToken; // ✅ store’dan al
+    if (!token) {
+      throw new Error("Access token yok. Önce login olmalısın.");
+    }
+
+    const resp = await fetch(url, {
+      method: "GET",
+      credentials: "include", // ✅ refresh cookie vs gerekiyorsa
+      headers: {
+        "Authorization": `Bearer ${token}`, // ✅ kritik
+        "Accept": "application/json",
+      },
+    });
+
     if (!resp.ok) {
       const t = await resp.text();
       throw new Error(`History ${resp.status}: ${t}`);
     }
+
     const data = (await resp.json()) as MessageDTO[];
     messages.value = data.slice().reverse();
     logLine(`History loaded (${messages.value.length})`);

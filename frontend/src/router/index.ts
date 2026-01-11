@@ -8,7 +8,7 @@ import HomeView from "@/views/HomeView.vue";
 
 const routes: RouteRecordRaw[] = [
   // Uygulama açılınca direkt login'e düşsün istiyorsan:
-  { path: "/", redirect: "/login" },
+  { path: "/", redirect: "/" },
 
   { path: "/login", name: "login", component: LoginView, meta: { guestOnly: true } },
   { path: "/register", name: "register", component: RegisterView, meta: { guestOnly: true } },

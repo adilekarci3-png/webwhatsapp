@@ -38,24 +38,31 @@ const loading = ref(false);
 const error = ref("");
 
 async function onSubmit() {
+  if (loading.value) return; // double submit guard
+
   error.value = "";
   loading.value = true;
 
   try {
-    const r = await authApi.login({ email: email.value, password: password.value });
+    const r = await authApi.login({
+      email: email.value.trim(),
+      password: password.value,
+    });
 
-    // Backend response varsayımı:
-    // r.data = { accessToken: "...", user: { id, name } }
     auth.setSession(r.data.accessToken, r.data.user);
-
-    await router.push("/");
+    await router.push("/app");
   } catch (e) {
-    error.value = e?.response?.data?.message || "Giriş başarısız.";
+    const data = e?.response?.data;
+    error.value =
+      (typeof data === "string" && data) ||
+      data?.message ||
+      "Giriş başarısız.";
   } finally {
     loading.value = false;
   }
 }
 </script>
+
 
 <style scoped>
 .auth-page { min-height: 100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
